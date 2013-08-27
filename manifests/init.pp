@@ -209,6 +209,7 @@ class openssh (
   $absent              = params_lookup( 'absent' ),
   $disable             = params_lookup( 'disable' ),
   $disableboot         = params_lookup( 'disableboot' ),
+  $exchange_hostkeys   = params_lookup( 'exchange_hostkeys' ),
   $monitor             = params_lookup( 'monitor' , 'global' ),
   $monitor_tool        = params_lookup( 'monitor_tool' , 'global' ),
   $monitor_target      = params_lookup( 'monitor_target' , 'global' ),
@@ -255,6 +256,11 @@ class openssh (
   $manage_package = $openssh::bool_absent ? {
     true  => 'absent',
     false => 'present',
+  }
+
+  $require_package = $openssh::package ? {
+    ''      => undef,
+    default => Package['openssh'],
   }
 
   $manage_service_enable = $openssh::bool_disableboot ? {
@@ -319,9 +325,11 @@ class openssh (
   }
 
   ### Managed resources
-  package { 'openssh':
-    ensure => $openssh::manage_package,
-    name   => $openssh::package,
+  if $openssh::package {
+    package { 'openssh':
+      ensure => $openssh::manage_package,
+      name   => $openssh::package,
+    }
   }
 
   service { 'openssh':
@@ -330,7 +338,7 @@ class openssh (
     enable     => $openssh::manage_service_enable,
     hasstatus  => $openssh::service_status,
     pattern    => $openssh::process,
-    require    => Package['openssh'],
+    require    => $require_package,
   }
 
   file { 'openssh.conf':
@@ -339,7 +347,7 @@ class openssh (
     mode    => $openssh::config_file_mode,
     owner   => $openssh::config_file_owner,
     group   => $openssh::config_file_group,
-    require => Package['openssh'],
+    require => $require_package,
     notify  => $openssh::manage_service_autorestart,
     source  => $openssh::manage_file_source,
     content => $openssh::manage_file_content,
@@ -352,13 +360,57 @@ class openssh (
     file { 'openssh.dir':
       ensure  => directory,
       path    => $openssh::config_dir,
-      require => Package['openssh'],
+      require => $require_package,
       notify  => $openssh::manage_service_autorestart,
       source  => $openssh::source_dir,
       recurse => true,
       purge   => $openssh::bool_source_dir_purge,
       replace => $openssh::manage_file_replace,
       audit   => $openssh::manage_audit,
+    }
+  }
+
+  if $openssh::exchange_hostkeys {
+    include openssh::hostkeys
+
+    $ssh_key_fqdn = $port ? {
+      22 => $::fqdn,
+      default => "[${::fqdn}]:$port",
+    }
+
+    $ssh_key_address = $port ? {
+      22 => $::ipaddress,
+      default => "[${::ipaddress}]:$port",
+    }
+
+    @@sshkey { $ssh_key_fqdn:
+      host_aliases => [ $ssh_key_address ],
+      type         => 'ssh-rsa',
+      key          => $::sshrsakey,
+      tag          => [ "openssh::hostkeys" ];
+    }
+
+    $ssh_key_name = $port ? {
+      22 => $::hostname,
+      default => "[${::hostname}]:$port",
+    }
+
+    @@sshkey { $ssh_key_name:
+      type => 'ssh-rsa',
+      key  => $::sshrsakey,
+      tag  => [ "openssh::hostkeys::${::domainname}" ];
+    }
+
+    # puppet creates this file with 0600, which is not very usable
+    file { "${openssh::config_dir}/ssh_known_hosts":
+      ensure  => present,
+      owner   => root,
+      mode    => '0644',
+      require => $require_package;
+    }
+
+    resources { 'sshkey':
+      purge => true;
     }
   }
 
